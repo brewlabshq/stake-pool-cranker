@@ -1,0 +1,22 @@
+[package]
+name = "stake-pool-cranker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+bincode = "1.3.1"
+borsh = "1.5.7"
+solana-account-decoder = "2.2.7"
+solana-cli-output = "2.2.7"
+solana-commitment-config = "2.2.1"
+solana-compute-budget = "2.2.7"
+solana-hash = "2.2.1"
+solana-instruction = "2.2.1"
+solana-message = "2.2.1"
+solana-native-token = "2.2.1"
+solana-pubkey = "2.2.1"
+solana-rpc-client = "2.2.7"
+solana-signer = "2.2.1"
+solana-transaction = "2.2.2"
+spl_stake_pool = { git = "https://github.com/solana-program/stake-pool", package = "spl-stake-pool" }
