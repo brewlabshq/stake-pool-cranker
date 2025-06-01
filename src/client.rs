@@ -8,12 +8,9 @@ pub fn get_stake_pool(
     rpc_client: &RpcClient,
     stake_pool_address: &Pubkey,
 ) -> Result<StakePool, Error> {
-    println!("came here");
     let account_data = rpc_client.get_account_data(stake_pool_address)?;
-    println!("slice: {:?}", try_from_slice_unchecked::<StakePool>(account_data.as_slice()));
     let stake_pool = try_from_slice_unchecked::<StakePool>(account_data.as_slice())
         .map_err(|err| format!("Invalid stake pool {}: {}", stake_pool_address, err))?;
-    println!("cam here now");
     Ok(stake_pool)
 }
 
