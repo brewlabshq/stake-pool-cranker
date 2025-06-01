@@ -1,23 +1,10 @@
 #![allow(clippy::arithmetic_side_effects)]
 mod client;
 mod utils;
+mod config;
 
 use {
-    crate::{
-        client::*,
-    },
-    solana_cli_output::OutputFormat,
-    solana_rpc_client::rpc_client::RpcClient,
-    solana_pubkey::Pubkey,
-    solana_instruction::Instruction,
-    utils::compute_budget::ComputeBudgetInstruction,
-    solana_commitment_config::CommitmentConfig,
-    solana_hash::Hash,
-    solana_message::Message,
-    solana_native_token::{self, Sol},
-    solana_signer::Signer,
-    solana_signer::signers::Signers,
-    solana_transaction::Transaction
+    crate::client::*, config::StakePoolConfig, dotenv::dotenv, solana_commitment_config::CommitmentConfig, solana_hash::Hash, solana_instruction::Instruction, solana_keypair::Keypair, solana_message::Message, solana_native_token::{self, Sol}, solana_pubkey::Pubkey, solana_rpc_client::rpc_client::RpcClient, solana_signer::{signers::Signers, Signer}, solana_transaction::Transaction, std::str::FromStr, utils::compute_budget::ComputeBudgetInstruction
 
 };
 
@@ -27,22 +14,39 @@ enum ComputeUnitLimit {
     Simulated,
 }
 
-
 pub(crate) struct Config {
     stake_pool_program_id: Pubkey,
     rpc_client: RpcClient,
-    verbose: bool,
-    output_format: OutputFormat,
-    manager: Box<dyn Signer>,
-    staker: Box<dyn Signer>,
-    funding_authority: Option<Box<dyn Signer>>,
-    token_owner: Box<dyn Signer>,
     fee_payer: Box<dyn Signer>,
     dry_run: bool,
     no_update: bool,
     compute_unit_price: Option<u64>,
     compute_unit_limit: ComputeUnitLimit,
 }
+
+
+fn main() {
+    dotenv().ok();
+
+    let rpc_url = StakePoolConfig::get_config().rpc_url;
+    let fee_payer_pvt_key = StakePoolConfig::get_config().fee_payer_private_key;
+    let fee_payer = Box::new(Keypair::from_base58_string(&fee_payer_pvt_key));
+
+    let stake_pool_address = &Pubkey::from_str("DpooSqZRL3qCmiq82YyB4zWmLfH3iEqx2gy8f2B6zjru").unwrap();
+    
+    let config = Config {
+        rpc_client: RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed()),
+        stake_pool_program_id: Pubkey::from_str("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy").unwrap(), //TODO: RECHECK
+        fee_payer,
+        dry_run: false, //simulates transaction instead of executing
+        no_update: false,
+        compute_unit_limit: ComputeUnitLimit::Default,
+        compute_unit_price: None,
+    };
+    let _ = command_update(&config, stake_pool_address, false, false, false);
+}
+
+
 
 type CommandResult = Result<(), Error>;
 
