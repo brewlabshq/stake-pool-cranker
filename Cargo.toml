@@ -25,3 +25,7 @@ dotenv = "0.15.0"
 thiserror = "2.0.12"
 solana-keypair = "2.2.1"
 solana-program = "2.2.1"
+
+[features]
+default = []
+dev-context-only-utils = []

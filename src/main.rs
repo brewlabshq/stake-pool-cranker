@@ -7,7 +7,7 @@ use {
     crate::client::*, config::StakePoolConfig, dotenv::dotenv, solana_commitment_config::CommitmentConfig, solana_hash::Hash, solana_instruction::Instruction, solana_keypair::Keypair, solana_message::Message, solana_native_token::{self, Sol}, solana_pubkey::Pubkey, solana_rpc_client::rpc_client::RpcClient, solana_signer::{signers::Signers, Signer}, solana_transaction::Transaction, std::str::FromStr, utils::compute_budget::ComputeBudgetInstruction
 
 };
-
+#[allow(dead_code)]
 enum ComputeUnitLimit {
     Default,
     Static(u32),
@@ -51,8 +51,6 @@ fn main() {
 
 
 type CommandResult = Result<(), Error>;
-
-const STAKE_STATE_LEN: usize = 200;
 
 fn get_latest_blockhash(client: &RpcClient) -> Result<Hash, Error> {
     Ok(client

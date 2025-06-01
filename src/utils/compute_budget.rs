@@ -8,6 +8,7 @@ pub fn id() -> Pubkey {
  Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap()
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComputeBudgetInstruction {
     Unused, // deprecated variant, reserved value.
@@ -41,6 +42,7 @@ macro_rules! to_instruction {
 
 impl ComputeBudgetInstruction {
     /// Create a `ComputeBudgetInstruction::RequestHeapFrame` `Instruction`
+    #[allow(dead_code)]
     pub fn request_heap_frame(bytes: u32) -> Instruction {
         to_instruction!(1, bytes, u32)
     }
@@ -57,12 +59,14 @@ impl ComputeBudgetInstruction {
 
     /// Serialize Instruction using borsh, this is only used in runtime::cost_model::tests but compilation
     /// can't be restricted as it's used across packages
+    #[allow(dead_code)]
     #[cfg(feature = "dev-context-only-utils")]
     pub fn pack(self) -> Result<Vec<u8>, borsh::io::Error> {
         borsh::to_vec(&self)
     }
 
     /// Create a `ComputeBudgetInstruction::SetLoadedAccountsDataSizeLimit` `Instruction`
+    #[allow(dead_code)]
     pub fn set_loaded_accounts_data_size_limit(bytes: u32) -> Instruction {
         to_instruction!(4, bytes, u32)
     }
