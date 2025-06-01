@@ -24,3 +24,4 @@ spl_stake_pool = { git = "https://github.com/solana-program/stake-pool", package
 dotenv = "0.15.0"
 thiserror = "2.0.12"
 solana-keypair = "2.2.1"
+solana-program = "2.2.1"

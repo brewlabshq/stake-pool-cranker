@@ -43,7 +43,9 @@ fn main() {
         compute_unit_limit: ComputeUnitLimit::Default,
         compute_unit_price: None,
     };
-    let _ = command_update(&config, stake_pool_address, false, false, false);
+    println!("Executing the update");
+
+    let _ = command_update(&config, stake_pool_address, true, false, false);
 }
 
 
