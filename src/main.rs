@@ -12,7 +12,7 @@ use {
     solana_native_token::{self, Sol}, solana_pubkey::Pubkey, 
     solana_rpc_client::rpc_client::RpcClient, 
     solana_signer::{signers::Signers, Signer}, 
-    solana_transaction::Transaction, std::{str::FromStr}, 
+    solana_transaction::Transaction, std::str::FromStr, 
     utils::compute_budget::ComputeBudgetInstruction
 
 };
@@ -29,48 +29,65 @@ enum ComputeUnitLimit {
 pub(crate) struct Config {
     stake_pool_program_id: Pubkey,
     rpc_client: RpcClient,
-    fee_payer: Box<dyn Signer>,
+    fee_payer: Box<dyn Signer + Send + 'static>,
     dry_run: bool,
     no_update: bool,
     compute_unit_price: Option<u64>,
     compute_unit_limit: ComputeUnitLimit,
 }
 
-
-
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     dotenv().ok();
 
-    let rpc_url = StakePoolConfig::get_config().rpc_url;
-    let fee_payer_pvt_key = StakePoolConfig::get_config().fee_payer_private_key;
+    set_config_and_update().await;
 
-    set_config_and_update(rpc_url, fee_payer_pvt_key).await;
+    tokio::signal::ctrl_c().await.expect("Failed to listen to shutdown signal");
 
     Ok(())
 }
 
 type CommandResult = Result<(), Error>;
 
-async fn set_config_and_update(rpc_url: String, fee_payer_pvt_key: String) {
+async fn set_config_and_update() {
+    let rpc_url = StakePoolConfig::get_config().rpc_url;
+    let fee_payer_pvt_key = StakePoolConfig::get_config().fee_payer_private_key;
+    let fee_payer = Keypair::from_base58_string(&fee_payer_pvt_key);
+    let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+
+    let stake_pool_pubkey = Pubkey::from_str(STAKE_POOL_ADDRESS).unwrap();
 
     tokio::spawn(async move {
-        let fee_payer = Box::new(Keypair::from_base58_string(&fee_payer_pvt_key));
-        let stake_pool_address = &Pubkey::from_str("").unwrap();
-        
+        let fee_payer_box: Box<dyn Signer + Send + 'static> = Box::new(fee_payer);
+
         let config = Config {
-            rpc_client: RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed()),
+            rpc_client: rpc_client,
             stake_pool_program_id: Pubkey::from_str("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy").unwrap(),
-            fee_payer: fee_payer,
+            fee_payer: fee_payer_box, 
             dry_run: false,
             no_update: false,
             compute_unit_limit: ComputeUnitLimit::Default,
             compute_unit_price: None
         };
-        
-        println!("Executing the update");
-        
-        let _ = command_update(&config, stake_pool_address, true, false, false);
+
+        loop {
+            println!("loop started, going to sleep....");
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(5 * 60)).await; //5 minutes
+            
+            println!("thread is awake, checking if epoch changed...");
+
+            let stake_pool = get_stake_pool(&config.rpc_client, &stake_pool_pubkey).unwrap();
+            let epoch_info = config.rpc_client.get_epoch_info().unwrap();
+            
+            if stake_pool.last_update_epoch == epoch_info.epoch {
+                println!("Epoch has not changed, skipping the update...");
+                continue;
+            }
+            
+            println!("Executing the update");
+            let _ = command_update(&config, &stake_pool_pubkey, true, false, false);
+        }
     });
 
 }
