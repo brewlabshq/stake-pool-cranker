@@ -4,9 +4,21 @@ mod utils;
 mod config;
 
 use {
-    crate::client::*, config::StakePoolConfig, dotenv::dotenv, solana_commitment_config::CommitmentConfig, solana_hash::Hash, solana_instruction::Instruction, solana_keypair::Keypair, solana_message::Message, solana_native_token::{self, Sol}, solana_pubkey::Pubkey, solana_rpc_client::rpc_client::RpcClient, solana_signer::{signers::Signers, Signer}, solana_transaction::Transaction, std::str::FromStr, utils::compute_budget::ComputeBudgetInstruction
+    crate::client::*, config::StakePoolConfig, 
+    dotenv::dotenv, 
+    solana_commitment_config::CommitmentConfig, 
+    solana_hash::Hash, solana_instruction::Instruction, 
+    solana_keypair::Keypair, solana_message::Message, 
+    solana_native_token::{self, Sol}, solana_pubkey::Pubkey, 
+    solana_rpc_client::rpc_client::RpcClient, 
+    solana_signer::{signers::Signers, Signer}, 
+    solana_transaction::Transaction, std::{str::FromStr}, 
+    utils::compute_budget::ComputeBudgetInstruction
 
 };
+
+pub const STAKE_POOL_ADDRESS: &str = "DpooSqZRL3qCmiq82YyB4zWmLfH3iEqx2gy8f2B6zjru";
+
 #[allow(dead_code)]
 enum ComputeUnitLimit {
     Default,
@@ -25,32 +37,43 @@ pub(crate) struct Config {
 }
 
 
-fn main() {
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     dotenv().ok();
 
     let rpc_url = StakePoolConfig::get_config().rpc_url;
     let fee_payer_pvt_key = StakePoolConfig::get_config().fee_payer_private_key;
-    let fee_payer = Box::new(Keypair::from_base58_string(&fee_payer_pvt_key));
 
-    let stake_pool_address = &Pubkey::from_str("DpooSqZRL3qCmiq82YyB4zWmLfH3iEqx2gy8f2B6zjru").unwrap();
-    
-    let config = Config {
-        rpc_client: RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed()),
-        stake_pool_program_id: Pubkey::from_str("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy").unwrap(), //TODO: RECHECK
-        fee_payer,
-        dry_run: false, //simulates transaction instead of executing
-        no_update: false,
-        compute_unit_limit: ComputeUnitLimit::Default,
-        compute_unit_price: None,
-    };
-    println!("Executing the update");
+    set_config_and_update(rpc_url, fee_payer_pvt_key).await;
 
-    let _ = command_update(&config, stake_pool_address, true, false, false);
+    Ok(())
 }
 
-
-
 type CommandResult = Result<(), Error>;
+
+async fn set_config_and_update(rpc_url: String, fee_payer_pvt_key: String) {
+
+    tokio::spawn(async move {
+        let fee_payer = Box::new(Keypair::from_base58_string(&fee_payer_pvt_key));
+        let stake_pool_address = &Pubkey::from_str("").unwrap();
+        
+        let config = Config {
+            rpc_client: RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed()),
+            stake_pool_program_id: Pubkey::from_str("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy").unwrap(),
+            fee_payer: fee_payer,
+            dry_run: false,
+            no_update: false,
+            compute_unit_limit: ComputeUnitLimit::Default,
+            compute_unit_price: None
+        };
+        
+        println!("Executing the update");
+        
+        let _ = command_update(&config, stake_pool_address, true, false, false);
+    });
+
+}
 
 fn get_latest_blockhash(client: &RpcClient) -> Result<Hash, Error> {
     Ok(client
