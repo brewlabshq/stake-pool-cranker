@@ -23,6 +23,7 @@ Create a `.env` file or export the following environment variables:
 ```env
 RPC_URL="https://api.mainnet-beta.solana.com"
 FEE_PAYER_PRIVATE_KEY=''  # Your Solana wallet's private key (Base64 or JSON)
+STAKE_POOL_ADDRESS=''
 ```
 
 <!-- ```` -->
@@ -61,7 +62,8 @@ cargo build --release
 
 ```bash
 RPC_URL="https://api.mainnet-beta.solana.com" \
-PAYER_PRIVATE_KEY='<your-private-key>' \
+FEE_PAYER_PRIVATE_KEY='<your-private-key>' \
+STAKE_POOL_ADDRESS='<your-stake-pool-address>' \
 cargo run --release
 ```
 ---

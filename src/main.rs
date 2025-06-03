@@ -17,8 +17,6 @@ use {
 
 };
 
-pub const STAKE_POOL_ADDRESS: &str = "DpooSqZRL3qCmiq82YyB4zWmLfH3iEqx2gy8f2B6zjru";
-
 #[allow(dead_code)]
 enum ComputeUnitLimit {
     Default,
@@ -51,11 +49,12 @@ type CommandResult = Result<(), Error>;
 
 async fn set_config_and_update() {
     let rpc_url = StakePoolConfig::get_config().rpc_url;
+    let stake_pool_address = StakePoolConfig::get_config().stake_pool_address;
     let fee_payer_pvt_key = StakePoolConfig::get_config().fee_payer_private_key;
     let fee_payer = Keypair::from_base58_string(&fee_payer_pvt_key);
     let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 
-    let stake_pool_pubkey = Pubkey::from_str(STAKE_POOL_ADDRESS).unwrap();
+    let stake_pool_pubkey = Pubkey::from_str(&stake_pool_address).unwrap();
 
     tokio::spawn(async move {
         let fee_payer_box: Box<dyn Signer + Send + 'static> = Box::new(fee_payer);
@@ -85,7 +84,7 @@ async fn set_config_and_update() {
                 continue;
             }
             
-            println!("Executing the update");
+            println!("Epoch changed, executing the update...");
             let _ = command_update(&config, &stake_pool_pubkey, true, false, false);
         }
     });
