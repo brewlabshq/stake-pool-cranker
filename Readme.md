@@ -23,7 +23,7 @@ Create a `.env` file or export the following environment variables:
 ```env
 RPC_URL="https://api.mainnet-beta.solana.com"
 FEE_PAYER_PRIVATE_KEY=''  # Your Solana wallet's private key (Base64 or JSON)
-STAKE_POOL_ADDRESS=''
+STAKE_POOL_ADDRESS=''     # Your Stake Pool address
 ```
 
 <!-- ```` -->
