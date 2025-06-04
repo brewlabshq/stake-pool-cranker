@@ -56,6 +56,8 @@ async fn set_config_and_update() {
 
     let stake_pool_pubkey = Pubkey::from_str(&stake_pool_address).unwrap();
 
+    let channel_id = StakePoolConfig::get_config().slack_channel_id;
+
     tokio::spawn(async move {
         let fee_payer_box: Box<dyn Signer + Send + 'static> = Box::new(fee_payer);
 
@@ -85,6 +87,10 @@ async fn set_config_and_update() {
             }
             
             println!("Epoch changed, executing the update...");
+
+            let response = slack_notification::send::send_message(&channel_id, &format!("Epoch changed, executing update for Dynosol for epoch {}",  epoch_info.epoch)).await.unwrap();
+            println!("Slack api response: {:#?}", response);
+
             let _ = command_update(&config, &stake_pool_pubkey, true, false, false);
         }
     });
