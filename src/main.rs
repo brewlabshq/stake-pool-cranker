@@ -88,7 +88,7 @@ async fn set_config_and_update() {
             
             println!("Epoch changed, executing the update...");
 
-            let response = slack_notification::send::send_message(&channel_id, &format!("Epoch changed, executing update for Dynosol for epoch {}",  epoch_info.epoch)).await.unwrap();
+            let response = slack_notification::send::send_message(&channel_id, &format!("Epoch changed, executing update for Dynosol for epoch {}",  epoch_info.epoch)).await.unwrap(); //sample message
             println!("Slack api response: {:#?}", response);
 
             let _ = command_update(&config, &stake_pool_pubkey, true, false, false);

@@ -24,11 +24,15 @@ Create a `.env` file or export the following environment variables:
 RPC_URL="https://api.mainnet-beta.solana.com"
 FEE_PAYER_PRIVATE_KEY=''  # Your Solana wallet's private key (Base64 or JSON)
 STAKE_POOL_ADDRESS=''     # Your Stake Pool address
+SLACK_TOKEN=''            # Slack Bot Token
+SLACK_CHANNEL_ID=''       # Slack channel id where bot should send the message  
 ```
 
 <!-- ```` -->
 
 > ⚠️ **Do not expose your `FEE_PAYER_PRIVATE_KEY` in public repos.** Use secrets managers or environment variables for secure deployment.
+
+> **Do not forget to change the message that you want to send on your slack channel. To change the message update line no. 81 in main.rs**
 
 ---
 
@@ -64,6 +68,8 @@ cargo build --release
 RPC_URL="https://api.mainnet-beta.solana.com" \
 FEE_PAYER_PRIVATE_KEY='<your-private-key>' \
 STAKE_POOL_ADDRESS='<your-stake-pool-address>' \
+SLACK_TOKEN='<your-slack-token>' \
+SLACK_CHANNEL_ID='<your-slack-channel-id>' \
 cargo run --release
 ```
 ---
