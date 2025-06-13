@@ -1,20 +1,29 @@
 #![allow(clippy::arithmetic_side_effects)]
 mod client;
-mod utils;
 mod config;
+mod utils;
 
 use {
-    crate::client::*, config::StakePoolConfig, 
-    dotenv::dotenv, 
-    solana_commitment_config::CommitmentConfig, 
-    solana_hash::Hash, solana_instruction::Instruction, 
-    solana_keypair::Keypair, solana_message::Message, 
-    solana_native_token::{self, Sol}, solana_pubkey::Pubkey, 
-    solana_rpc_client::rpc_client::RpcClient, 
-    solana_signer::{signers::Signers, Signer}, 
-    solana_transaction::Transaction, std::str::FromStr, 
-    utils::compute_budget::ComputeBudgetInstruction
-
+    crate::client::*,
+    config::StakePoolConfig,
+    dotenv::dotenv,
+    solana_account_decoder::parse_token::token_amount_to_ui_amount_v3,
+    solana_commitment_config::CommitmentConfig,
+    solana_hash::Hash,
+    solana_instruction::Instruction,
+    solana_keypair::Keypair,
+    solana_message::Message,
+    solana_native_token::{self, Sol},
+    solana_pubkey::Pubkey,
+    solana_rpc_client::rpc_client::RpcClient,
+    solana_signer::{Signer, signers::Signers},
+    solana_transaction::Transaction,
+    spl_stake_pool::{
+        MINIMUM_RESERVE_LAMPORTS, find_stake_program_address, find_transient_stake_program_address,
+        find_withdraw_authority_program_address,
+    },
+    std::{num::NonZeroU32, str::FromStr},
+    utils::compute_budget::ComputeBudgetInstruction,
 };
 
 #[allow(dead_code)]
@@ -40,7 +49,9 @@ async fn main() -> Result<(), Error> {
 
     set_config_and_update().await;
 
-    tokio::signal::ctrl_c().await.expect("Failed to listen to shutdown signal");
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to listen to shutdown signal");
 
     Ok(())
 }
@@ -63,38 +74,46 @@ async fn set_config_and_update() {
 
         let config = Config {
             rpc_client: rpc_client,
-            stake_pool_program_id: Pubkey::from_str("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy").unwrap(),
-            fee_payer: fee_payer_box, 
+            stake_pool_program_id: Pubkey::from_str("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy")
+                .unwrap(),
+            fee_payer: fee_payer_box,
             dry_run: false,
             no_update: false,
             compute_unit_limit: ComputeUnitLimit::Default,
-            compute_unit_price: None
+            compute_unit_price: None,
         };
 
         loop {
             println!("loop started, going to sleep....");
 
             tokio::time::sleep(tokio::time::Duration::from_secs(5 * 60)).await; //5 minutes
-            
+
             println!("thread is awake, checking if epoch changed...");
 
             let stake_pool = get_stake_pool(&config.rpc_client, &stake_pool_pubkey).unwrap();
             let epoch_info = config.rpc_client.get_epoch_info().unwrap();
-            
+
             if stake_pool.last_update_epoch == epoch_info.epoch {
                 println!("Epoch has not changed, skipping the update...");
                 continue;
             }
-            
+
             println!("Epoch changed, executing the update...");
 
-            let response = slack_notification::send::send_message(&channel_id, &format!("Epoch changed, executing update for Dynosol for epoch {}",  epoch_info.epoch)).await.unwrap(); //sample message
+            let response = slack_notification::send::send_message(
+                &channel_id,
+                &format!(
+                    "Epoch changed, executing update for Dynosol for epoch {}",
+                    epoch_info.epoch
+                ),
+            )
+            .await
+            .unwrap(); //sample message
             println!("Slack api response: {:#?}", response);
 
             let _ = command_update(&config, &stake_pool_pubkey, true, false, false);
         }
     });
-
 }
 
 fn get_latest_blockhash(client: &RpcClient) -> Result<Hash, Error> {
@@ -125,7 +144,6 @@ fn check_fee_payer_balance(config: &Config, required_balance: u64) -> Result<(),
         Ok(())
     }
 }
-
 
 fn checked_transaction_with_signers_and_additional_fee<T: Signers>(
     config: &Config,
@@ -199,7 +217,6 @@ fn send_transaction_no_wait(
     Ok(())
 }
 
-
 fn command_update(
     config: &Config,
     stake_pool_address: &Pubkey,
@@ -272,5 +289,78 @@ fn command_update(
     )?;
     send_transaction(config, transaction)?;
 
+    Ok(())
+}
+
+fn command_list(config: &Config, stake_pool_address: &Pubkey) -> CommandResult {
+    let stake_pool = get_stake_pool(&config.rpc_client, stake_pool_address)?;
+    let reserve_stake_account_address = stake_pool.reserve_stake.to_string();
+    let total_lamports = stake_pool.total_lamports;
+    let last_update_epoch = stake_pool.last_update_epoch;
+    let validator_list = get_validator_list(&config.rpc_client, &stake_pool.validator_list)?;
+    let max_number_of_validators = validator_list.header.max_validators;
+    let current_number_of_validators = validator_list.validators.len();
+    let pool_mint = get_token_mint(&config.rpc_client, &stake_pool.pool_mint)?;
+    let epoch_info = config.rpc_client.get_epoch_info()?;
+    let pool_withdraw_authority =
+        find_withdraw_authority_program_address(&config.stake_pool_program_id, stake_pool_address)
+            .0;
+    let reserve_stake = config.rpc_client.get_account(&stake_pool.reserve_stake)?;
+    let minimum_reserve_stake_balance = config
+        .rpc_client
+        .get_minimum_balance_for_rent_exemption(STAKE_STATE_LEN)?
+        + MINIMUM_RESERVE_LAMPORTS;
+    let cli_stake_pool_stake_account_infos = validator_list
+        .validators
+        .iter()
+        .map(|validator| {
+            let validator_seed = NonZeroU32::new(validator.validator_seed_suffix.into());
+            let (stake_account_address, _) = find_stake_program_address(
+                &config.stake_pool_program_id,
+                &validator.vote_account_address,
+                stake_pool_address,
+                validator_seed,
+            );
+            let (transient_stake_account_address, _) = find_transient_stake_program_address(
+                &config.stake_pool_program_id,
+                &validator.vote_account_address,
+                stake_pool_address,
+                validator.transient_seed_suffix.into(),
+            );
+            let update_required = u64::from(validator.last_update_epoch) != epoch_info.epoch;
+            CliStakePoolStakeAccountInfo {
+                vote_account_address: validator.vote_account_address.to_string(),
+                stake_account_address: stake_account_address.to_string(),
+                validator_active_stake_lamports: validator.active_stake_lamports.into(),
+                validator_last_update_epoch: validator.last_update_epoch.into(),
+                validator_lamports: validator.stake_lamports().unwrap(),
+                validator_transient_stake_account_address: transient_stake_account_address
+                    .to_string(),
+                validator_transient_stake_lamports: validator.transient_stake_lamports.into(),
+                update_required,
+            }
+        })
+        .collect();
+    let total_pool_tokens =
+        token_amount_to_ui_amount_v3(stake_pool.pool_token_supply, pool_mint.decimals);
+    let mut cli_stake_pool = CliStakePool::from((
+        *stake_pool_address,
+        stake_pool,
+        validator_list,
+        pool_withdraw_authority,
+    ));
+    let update_required = last_update_epoch != epoch_info.epoch;
+    let cli_stake_pool_details = CliStakePoolDetails {
+        reserve_stake_account_address,
+        reserve_stake_lamports: reserve_stake.lamports,
+        minimum_reserve_stake_balance,
+        stake_accounts: cli_stake_pool_stake_account_infos,
+        total_lamports,
+        total_pool_tokens,
+        current_number_of_validators: current_number_of_validators as u32,
+        max_number_of_validators,
+        update_required,
+    };
+    cli_stake_pool.details = Some(cli_stake_pool_details);
     Ok(())
 }
