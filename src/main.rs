@@ -4,16 +4,7 @@ mod utils;
 mod config;
 
 use {
-    crate::client::*, config::StakePoolConfig, 
-    dotenv::dotenv, 
-    solana_commitment_config::CommitmentConfig, 
-    solana_hash::Hash, solana_instruction::Instruction, 
-    solana_keypair::Keypair, solana_message::Message, 
-    solana_native_token::{self, Sol}, solana_pubkey::Pubkey, 
-    solana_rpc_client::rpc_client::RpcClient, 
-    solana_signer::{signers::Signers, Signer}, 
-    solana_transaction::Transaction, std::str::FromStr, 
-    utils::compute_budget::ComputeBudgetInstruction
+    crate::client::*, config::StakePoolConfig, dotenv::dotenv, solana_commitment_config::CommitmentConfig, solana_epoch_info::EpochInfo, solana_hash::Hash, solana_instruction::Instruction, solana_keypair::Keypair, solana_message::Message, solana_native_token::{self, Sol}, solana_pubkey::Pubkey, solana_rpc_client::rpc_client::RpcClient, solana_signer::{signers::Signers, Signer}, solana_transaction::Transaction, std::str::FromStr, utils::compute_budget::ComputeBudgetInstruction
 
 };
 
@@ -47,6 +38,26 @@ async fn main() -> Result<(), Error> {
 
 type CommandResult = Result<(), Error>;
 
+async fn get_epoch_info_with_backoff(client: &RpcClient, retries: u8) -> Result<EpochInfo, Box<dyn std::error::Error + Send + Sync>> {
+    let delay = 500; //500ms
+    let mut attempts = 0;
+
+    while attempts < retries {
+        match client.get_epoch_info() {
+            Ok(info) => return Ok(info),
+            Err(err) => {
+                eprintln!("Attempt {} failed to get current epoch. Failed with reason: {:?}", attempts + 1, err);
+                let jitter = rand::random_range(0..100); //upto 100ms
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay + jitter)).await;
+                attempts += 1;
+            }
+
+        }
+    }
+
+    Err("Exceeded max retries for get_epoch_info".into())    
+}
+
 async fn set_config_and_update() {
     let rpc_url = StakePoolConfig::get_config().rpc_url;
     let stake_pool_address = StakePoolConfig::get_config().stake_pool_address;
@@ -71,6 +82,8 @@ async fn set_config_and_update() {
             compute_unit_price: None
         };
 
+        let stake_pool = get_stake_pool(&config.rpc_client, &stake_pool_pubkey).unwrap();
+
         loop {
             println!("loop started, going to sleep....");
 
@@ -78,9 +91,23 @@ async fn set_config_and_update() {
             
             println!("thread is awake, checking if epoch changed...");
 
-            let stake_pool = get_stake_pool(&config.rpc_client, &stake_pool_pubkey).unwrap();
-            let epoch_info = config.rpc_client.get_epoch_info().unwrap();
-            
+            let epoch_info = match get_epoch_info_with_backoff(&config.rpc_client, 5).await {
+                Ok(info) => {
+                    println!("Epoch info is: {:?}", info);
+                    info
+                },
+                Err(err) => {
+                    println!("Failed with error: {:#?}", err);
+                    match slack_notification::send::send_message(&channel_id, "Rpc is failing to get the latest epoch info. Retrying again in 5 minutes").await {
+                        Ok(_) => {},
+                        Err(err) => {
+                            eprintln!("Failed to send message on slack about rpc failure. Failed with reason: {:#?}", err);
+                        }
+                    };
+                    continue;
+                }
+            };
+
             if stake_pool.last_update_epoch == epoch_info.epoch {
                 println!("Epoch has not changed, skipping the update...");
                 continue;
@@ -88,10 +115,23 @@ async fn set_config_and_update() {
             
             println!("Epoch changed, executing the update...");
 
-            let response = slack_notification::send::send_message(&channel_id, &format!("Epoch changed, executing update for Dynosol for epoch {}",  epoch_info.epoch)).await.unwrap(); //sample message
-            println!("Slack api response: {:#?}", response);
+            if let Ok(response) = slack_notification::send::send_message(&channel_id, &format!("Epoch changed, executing update for Dynosol for epoch {}",  epoch_info.epoch)).await {
+                println!("Slack api response: {:#?}", response); //sample message
+            } else {
+                eprintln!("Failed to send slack message about triggering rewards");
+            }
 
-            let _ = command_update(&config, &stake_pool_pubkey, true, false, false);
+            match command_update(&config, &stake_pool_pubkey, true, false, false) {
+                Ok(_) => {},
+                Err(err) => {
+                    eprintln!("Failed to update DynoSol. Failed with error: {:#?}", err);
+                    if let Ok(response)  = slack_notification::send::send_message(&channel_id, "Failed to run command to update Dyno Sol").await {
+                        println!("Slack api response: {:#?}", response);
+                    } else {
+                        eprintln!("Failed to send slack message about command update");
+                    }
+                }
+            }
         }
     });
 

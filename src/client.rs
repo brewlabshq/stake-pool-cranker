@@ -2,7 +2,7 @@ use {
     crate::utils::compute_budget::ComputeBudgetInstruction, solana_hash::Hash, solana_instruction::Instruction, solana_message::Message, solana_program::borsh1::try_from_slice_unchecked, solana_pubkey::Pubkey, solana_rpc_client::rpc_client::RpcClient, solana_transaction::Transaction, spl_stake_pool::state::{StakePool, ValidatorList}
 };
 
-pub(crate) type Error = Box<dyn std::error::Error>;
+pub(crate) type Error = Box<dyn std::error::Error + Send + Sync>;
 
 pub fn get_stake_pool(
     rpc_client: &RpcClient,
