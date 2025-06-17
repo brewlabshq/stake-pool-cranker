@@ -18,7 +18,7 @@ enum ComputeUnitLimit {
 pub(crate) struct Config {
     stake_pool_program_id: Pubkey,
     rpc_client: RpcClient,
-    fee_payer: Box<dyn Signer + Send + 'static>,
+    fee_payer: Box<dyn Signer + Send + Sync + 'static>,
     dry_run: bool,
     no_update: bool,
     compute_unit_price: Option<u64>,
@@ -70,7 +70,7 @@ async fn set_config_and_update() {
     let channel_id = StakePoolConfig::get_config().slack_channel_id;
 
     tokio::spawn(async move {
-        let fee_payer_box: Box<dyn Signer + Send + 'static> = Box::new(fee_payer);
+        let fee_payer_box: Box<dyn Signer + Send + Sync + 'static> = Box::new(fee_payer);
 
         let config = Config {
             rpc_client: rpc_client,
@@ -82,14 +82,14 @@ async fn set_config_and_update() {
             compute_unit_price: None
         };
 
-        let stake_pool = get_stake_pool(&config.rpc_client, &stake_pool_pubkey).unwrap();
-
         loop {
             println!("loop started, going to sleep....");
 
             tokio::time::sleep(tokio::time::Duration::from_secs(5 * 60)).await; //5 minutes
             
             println!("thread is awake, checking if epoch changed...");
+    
+            let stake_pool = get_stake_pool(&config.rpc_client, &stake_pool_pubkey).unwrap();
 
             let epoch_info = match get_epoch_info_with_backoff(&config.rpc_client, 5).await {
                 Ok(info) => {
@@ -121,7 +121,7 @@ async fn set_config_and_update() {
                 eprintln!("Failed to send slack message about triggering rewards");
             }
 
-            match command_update(&config, &stake_pool_pubkey, true, false, false) {
+            match command_update(&config, &stake_pool_pubkey, true, false, false).await {
                 Ok(_) => {},
                 Err(err) => {
                     eprintln!("Failed to update DynoSol. Failed with error: {:#?}", err);
@@ -240,7 +240,7 @@ fn send_transaction_no_wait(
 }
 
 
-fn command_update(
+async fn command_update(
     config: &Config,
     stake_pool_address: &Pubkey,
     force: bool,
