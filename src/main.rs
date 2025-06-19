@@ -4,7 +4,7 @@ mod utils;
 mod config;
 
 use {
-    crate::client::*, config::StakePoolConfig, dotenv::dotenv, solana_commitment_config::CommitmentConfig, solana_epoch_info::EpochInfo, solana_hash::Hash, solana_instruction::Instruction, solana_keypair::Keypair, solana_message::Message, solana_native_token::{self, Sol}, solana_pubkey::Pubkey, solana_rpc_client::rpc_client::RpcClient, solana_signer::{signers::Signers, Signer}, solana_transaction::Transaction, std::str::FromStr, utils::compute_budget::ComputeBudgetInstruction
+    crate::{client::*, utils::types::{AccountType, PodStakeStatus, PodU32, PodU64, ValidatorList, ValidatorListHeader, ValidatorStakeInfo}}, actix_cors::Cors, actix_web::{get, App, HttpResponse, HttpServer}, config::StakePoolConfig, dotenv::dotenv, solana_commitment_config::CommitmentConfig, solana_epoch_info::EpochInfo, solana_hash::Hash, solana_instruction::Instruction, solana_keypair::Keypair, solana_message::Message, solana_native_token::{self, Sol}, solana_pubkey::Pubkey, solana_rpc_client::rpc_client::RpcClient, solana_signer::{signers::Signers, Signer}, solana_transaction::Transaction, spl_stake_pool::state::AccountType as SplAccountType, std::str::FromStr, tokio::time::interval, utils::compute_budget::ComputeBudgetInstruction
 
 };
 
@@ -25,18 +25,90 @@ pub(crate) struct Config {
     compute_unit_limit: ComputeUnitLimit,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Error> {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> std::io::Result<()> {
     dotenv().ok();
 
-    set_config_and_update().await;
+    let config = StakePoolConfig::get_config();
 
-    tokio::signal::ctrl_c().await.expect("Failed to listen to shutdown signal");
+    // Start the background task that runs every 5 minutes
+    tokio::spawn(async {
+        let mut ticker = interval(tokio::time::Duration::from_secs(300)); // 5 minutes
+        loop {
+            ticker.tick().await;
+            set_config_and_update().await;
+    
+        }
+    });
 
-    Ok(())
+    println!("Stake pool starting on port: {}", config.port);
+
+    HttpServer::new(|| {
+        App::new()
+            .wrap(
+                Cors::default()
+                    .allow_any_origin()
+                    .allowed_methods(vec!["GET"])
+            )
+            .service(get_validators)
+    })
+    .bind(("127.0.0.1", config.port))?
+    .run()
+    .await
 }
 
 type CommandResult = Result<(), Error>;
+
+#[get("/validators")]
+async fn get_validators() -> HttpResponse {
+    let result = tokio::task::spawn_blocking(move || {
+        let rpc_url = StakePoolConfig::get_config().rpc_url;
+        let stake_pool_address = StakePoolConfig::get_config().stake_pool_address;
+        
+        let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+        let stake_pool_pubkey = Pubkey::from_str(&stake_pool_address).unwrap();
+        
+        let stake_pool = get_stake_pool(&rpc_client, &stake_pool_pubkey).map_err(|_| "Failed to fetch stake pool")?;
+        let validator_list = get_validator_list(&rpc_client, &stake_pool.validator_list)
+            .map_err(|_| "Failed to fetch validator list")?;
+
+        let serialized_validator_list = ValidatorList {
+            header: ValidatorListHeader {
+                account_type: match validator_list.header.account_type {
+                    SplAccountType::StakePool => AccountType::StakePool,
+                    SplAccountType::Uninitialized => AccountType::Uninitialized,
+                    SplAccountType::ValidatorList => AccountType::ValidatorList,
+                },
+                max_validators: validator_list.header.max_validators,
+            },
+            validators: validator_list
+                .validators
+                .into_iter()
+                .map(|x| ValidatorStakeInfo {
+                    active_stake_lamports: PodU64(u64::from_le_bytes(x.active_stake_lamports.0).to_le_bytes()),
+                    transient_stake_lamports: PodU64(u64::from_le_bytes(x.transient_stake_lamports.0).to_le_bytes()),
+                    last_update_epoch: PodU64(u64::from_le_bytes(x.last_update_epoch.0).to_le_bytes()),
+                    transient_seed_suffix: PodU64(u64::from_le_bytes(x.transient_seed_suffix.0).to_le_bytes()),
+                    unused: PodU32(u32::from_le_bytes(x.unused.0).to_le_bytes()),
+                    validator_seed_suffix: PodU32(u32::from_le_bytes(x.validator_seed_suffix.0).to_le_bytes()),
+                    status: PodStakeStatus(unsafe {
+                        std::ptr::read(&x.status as *const _ as *const u8)
+                    }),
+                    vote_account_address: x.vote_account_address,
+                })
+                .collect(),
+        };
+
+        Ok::<_, &str>(serialized_validator_list)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(validators)) => HttpResponse::Ok().json(validators),
+        Ok(Err(msg)) => HttpResponse::InternalServerError().body(msg),
+        Err(_) => HttpResponse::InternalServerError().body("Internal panic occurred"),
+    }
+}
 
 async fn get_epoch_info_with_backoff(client: &RpcClient, retries: u8) -> Result<EpochInfo, Box<dyn std::error::Error + Send + Sync>> {
     let delay = 500; //500ms
@@ -59,17 +131,17 @@ async fn get_epoch_info_with_backoff(client: &RpcClient, retries: u8) -> Result<
 }
 
 async fn set_config_and_update() {
-    let rpc_url = StakePoolConfig::get_config().rpc_url;
     let stake_pool_address = StakePoolConfig::get_config().stake_pool_address;
     let fee_payer_pvt_key = StakePoolConfig::get_config().fee_payer_private_key;
     let fee_payer = Keypair::from_base58_string(&fee_payer_pvt_key);
-    let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 
     let stake_pool_pubkey = Pubkey::from_str(&stake_pool_address).unwrap();
 
     let channel_id = StakePoolConfig::get_config().slack_channel_id;
 
-    tokio::spawn(async move {
+        let rpc_url = StakePoolConfig::get_config().rpc_url;
+        let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+
         let fee_payer_box: Box<dyn Signer + Send + Sync + 'static> = Box::new(fee_payer);
 
         let config = Config {
@@ -81,11 +153,6 @@ async fn set_config_and_update() {
             compute_unit_limit: ComputeUnitLimit::Default,
             compute_unit_price: None
         };
-
-        loop {
-            println!("loop started, going to sleep....");
-
-            tokio::time::sleep(tokio::time::Duration::from_secs(5 * 60)).await; //5 minutes
             
             println!("thread is awake, checking if epoch changed...");
     
@@ -104,13 +171,13 @@ async fn set_config_and_update() {
                             eprintln!("Failed to send message on slack about rpc failure. Failed with reason: {:#?}", err);
                         }
                     };
-                    continue;
+                    return;
                 }
             };
 
             if stake_pool.last_update_epoch == epoch_info.epoch {
                 println!("Epoch has not changed, skipping the update...");
-                continue;
+                return;
             }
             
             println!("Epoch changed, executing the update...");
@@ -132,8 +199,6 @@ async fn set_config_and_update() {
                     }
                 }
             }
-        }
-    });
 
 }
 

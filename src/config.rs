@@ -5,6 +5,7 @@ use thiserror::Error;
 #[allow(dead_code)]
 #[derive(Default, Debug)]
 pub struct StakePoolConfig {
+    pub port: u16,
     pub rpc_url: String,
     pub fee_payer_private_key: String,
     pub stake_pool_address: String,
@@ -28,6 +29,13 @@ enum ConfigError {
 
 impl StakePoolConfig {
     pub fn get_config() -> Self {
+        let port = match env::var("PORT") {
+            Ok(port) => port.parse::<u16>().unwrap(),
+            Err(_) => {
+                8000
+            }
+        };
+
         let rpc_url = env::var("RPC_URL").unwrap_or_else(|_| ConfigError::InavlidRpcURL.to_string());
 
         let fee_payer_private_key = env::var("FEE_PAYER_PRIVATE_KEY").unwrap_or_else(|_| ConfigError::InvalidFeePayerPrivateKey.to_string());
@@ -38,6 +46,6 @@ impl StakePoolConfig {
 
         let slack_channel_id = env::var("SLACK_CHANNEL_ID").unwrap_or_else(|_| ConfigError::InvalidSlackChannelID.to_string());
 
-        Self { rpc_url, fee_payer_private_key, stake_pool_address, slack_token, slack_channel_id }
+        Self { port, rpc_url, fee_payer_private_key, stake_pool_address, slack_token, slack_channel_id }
     }
 }
