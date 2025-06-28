@@ -1,11 +1,35 @@
 #![allow(clippy::arithmetic_side_effects)]
 mod client;
-mod utils;
 mod config;
+mod utils;
 
 use {
-    crate::{client::*, utils::types::{AccountType, PodStakeStatus, PodU32, PodU64, ValidatorList, ValidatorListHeader, ValidatorStakeInfo}}, actix_cors::Cors, actix_web::{get, App, HttpResponse, HttpServer}, config::StakePoolConfig, dotenv::dotenv, solana_commitment_config::CommitmentConfig, solana_epoch_info::EpochInfo, solana_hash::Hash, solana_instruction::Instruction, solana_keypair::Keypair, solana_message::Message, solana_native_token::{self, Sol}, solana_pubkey::Pubkey, solana_rpc_client::rpc_client::RpcClient, solana_signer::{signers::Signers, Signer}, solana_transaction::Transaction, spl_stake_pool::state::AccountType as SplAccountType, std::str::FromStr, tokio::time::interval, utils::compute_budget::ComputeBudgetInstruction
-
+    crate::{
+        client::*,
+        utils::types::{
+            AccountType, PodStakeStatus, PodU32, PodU64, ValidatorList, ValidatorListHeader,
+            ValidatorStakeInfo,
+        },
+    },
+    actix_cors::Cors,
+    actix_web::{App, HttpResponse, HttpServer, get},
+    config::StakePoolConfig,
+    dotenv::dotenv,
+    solana_commitment_config::CommitmentConfig,
+    solana_epoch_info::EpochInfo,
+    solana_hash::Hash,
+    solana_instruction::Instruction,
+    solana_keypair::Keypair,
+    solana_message::Message,
+    solana_native_token::{self, Sol},
+    solana_pubkey::Pubkey,
+    solana_rpc_client::rpc_client::RpcClient,
+    solana_signer::{Signer, signers::Signers},
+    solana_transaction::Transaction,
+    spl_stake_pool::state::AccountType as SplAccountType,
+    std::str::FromStr,
+    tokio::time::interval,
+    utils::compute_budget::ComputeBudgetInstruction,
 };
 
 #[allow(dead_code)]
@@ -37,7 +61,6 @@ async fn main() -> std::io::Result<()> {
         loop {
             ticker.tick().await;
             set_config_and_update().await;
-    
         }
     });
 
@@ -48,7 +71,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(
                 Cors::default()
                     .allow_any_origin()
-                    .allowed_methods(vec!["GET"])
+                    .allowed_methods(vec!["GET"]),
             )
             .service(get_validators)
     })
@@ -64,11 +87,12 @@ async fn get_validators() -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || {
         let rpc_url = StakePoolConfig::get_config().rpc_url;
         let stake_pool_address = StakePoolConfig::get_config().stake_pool_address;
-        
+
         let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
         let stake_pool_pubkey = Pubkey::from_str(&stake_pool_address).unwrap();
-        
-        let stake_pool = get_stake_pool(&rpc_client, &stake_pool_pubkey).map_err(|_| "Failed to fetch stake pool")?;
+
+        let stake_pool = get_stake_pool(&rpc_client, &stake_pool_pubkey)
+            .map_err(|_| "Failed to fetch stake pool")?;
         let validator_list = get_validator_list(&rpc_client, &stake_pool.validator_list)
             .map_err(|_| "Failed to fetch validator list")?;
 
@@ -85,12 +109,22 @@ async fn get_validators() -> HttpResponse {
                 .validators
                 .into_iter()
                 .map(|x| ValidatorStakeInfo {
-                    active_stake_lamports: PodU64(u64::from_le_bytes(x.active_stake_lamports.0).to_le_bytes()),
-                    transient_stake_lamports: PodU64(u64::from_le_bytes(x.transient_stake_lamports.0).to_le_bytes()),
-                    last_update_epoch: PodU64(u64::from_le_bytes(x.last_update_epoch.0).to_le_bytes()),
-                    transient_seed_suffix: PodU64(u64::from_le_bytes(x.transient_seed_suffix.0).to_le_bytes()),
+                    active_stake_lamports: PodU64(
+                        u64::from_le_bytes(x.active_stake_lamports.0).to_le_bytes(),
+                    ),
+                    transient_stake_lamports: PodU64(
+                        u64::from_le_bytes(x.transient_stake_lamports.0).to_le_bytes(),
+                    ),
+                    last_update_epoch: PodU64(
+                        u64::from_le_bytes(x.last_update_epoch.0).to_le_bytes(),
+                    ),
+                    transient_seed_suffix: PodU64(
+                        u64::from_le_bytes(x.transient_seed_suffix.0).to_le_bytes(),
+                    ),
                     unused: PodU32(u32::from_le_bytes(x.unused.0).to_le_bytes()),
-                    validator_seed_suffix: PodU32(u32::from_le_bytes(x.validator_seed_suffix.0).to_le_bytes()),
+                    validator_seed_suffix: PodU32(
+                        u32::from_le_bytes(x.validator_seed_suffix.0).to_le_bytes(),
+                    ),
                     status: PodStakeStatus(unsafe {
                         std::ptr::read(&x.status as *const _ as *const u8)
                     }),
@@ -110,7 +144,10 @@ async fn get_validators() -> HttpResponse {
     }
 }
 
-async fn get_epoch_info_with_backoff(client: &RpcClient, retries: u8) -> Result<EpochInfo, Box<dyn std::error::Error + Send + Sync>> {
+async fn get_epoch_info_with_backoff(
+    client: &RpcClient,
+    retries: u8,
+) -> Result<EpochInfo, Box<dyn std::error::Error + Send + Sync>> {
     let delay = 500; //500ms
     let mut attempts = 0;
 
@@ -118,16 +155,19 @@ async fn get_epoch_info_with_backoff(client: &RpcClient, retries: u8) -> Result<
         match client.get_epoch_info() {
             Ok(info) => return Ok(info),
             Err(err) => {
-                eprintln!("Attempt {} failed to get current epoch. Failed with reason: {:?}", attempts + 1, err);
+                eprintln!(
+                    "Attempt {} failed to get current epoch. Failed with reason: {:?}",
+                    attempts + 1,
+                    err
+                );
                 let jitter = rand::random_range(0..100); //upto 100ms
                 tokio::time::sleep(tokio::time::Duration::from_millis(delay + jitter)).await;
                 attempts += 1;
             }
-
         }
     }
 
-    Err("Exceeded max retries for get_epoch_info".into())    
+    Err("Exceeded max retries for get_epoch_info".into())
 }
 
 async fn set_config_and_update() {
@@ -139,67 +179,94 @@ async fn set_config_and_update() {
 
     let channel_id = StakePoolConfig::get_config().slack_channel_id;
 
-        let rpc_url = StakePoolConfig::get_config().rpc_url;
-        let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+    let rpc_url = StakePoolConfig::get_config().rpc_url;
+    let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 
-        let fee_payer_box: Box<dyn Signer + Send + Sync + 'static> = Box::new(fee_payer);
+    let fee_payer_box: Box<dyn Signer + Send + Sync + 'static> = Box::new(fee_payer);
 
-        let config = Config {
-            rpc_client: rpc_client,
-            stake_pool_program_id: Pubkey::from_str("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy").unwrap(),
-            fee_payer: fee_payer_box, 
-            dry_run: false,
-            no_update: false,
-            compute_unit_limit: ComputeUnitLimit::Default,
-            compute_unit_price: None
-        };
-            
-            println!("thread is awake, checking if epoch changed...");
-    
-            let stake_pool = get_stake_pool(&config.rpc_client, &stake_pool_pubkey).unwrap();
+    let config = Config {
+        rpc_client: rpc_client,
+        stake_pool_program_id: Pubkey::from_str("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy")
+            .unwrap(),
+        fee_payer: fee_payer_box,
+        dry_run: false,
+        no_update: false,
+        compute_unit_limit: ComputeUnitLimit::Default,
+        compute_unit_price: None,
+    };
 
-            let epoch_info = match get_epoch_info_with_backoff(&config.rpc_client, 5).await {
-                Ok(info) => {
-                    println!("Epoch info is: {:?}", info);
-                    info
-                },
+    println!("thread is awake, checking if epoch changed...");
+
+    let stake_pool = match get_stake_pool(&config.rpc_client, &stake_pool_pubkey) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("Error: fail to get stake pool");
+            return;
+        }
+    };
+
+    let epoch_info = match get_epoch_info_with_backoff(&config.rpc_client, 5).await {
+        Ok(info) => {
+            println!("Epoch info is: {:?}", info);
+            info
+        }
+        Err(err) => {
+            println!("Failed with error: {:#?}", err);
+            match slack_notification::send::send_message(
+                &channel_id,
+                "Rpc is failing to get the latest epoch info. Retrying again in 5 minutes",
+            )
+            .await
+            {
+                Ok(_) => {}
                 Err(err) => {
-                    println!("Failed with error: {:#?}", err);
-                    match slack_notification::send::send_message(&channel_id, "Rpc is failing to get the latest epoch info. Retrying again in 5 minutes").await {
-                        Ok(_) => {},
-                        Err(err) => {
-                            eprintln!("Failed to send message on slack about rpc failure. Failed with reason: {:#?}", err);
-                        }
-                    };
-                    return;
+                    eprintln!(
+                        "Failed to send message on slack about rpc failure. Failed with reason: {:#?}",
+                        err
+                    );
                 }
             };
+            return;
+        }
+    };
 
-            if stake_pool.last_update_epoch == epoch_info.epoch {
-                println!("Epoch has not changed, skipping the update...");
-                return;
-            }
-            
-            println!("Epoch changed, executing the update...");
+    if stake_pool.last_update_epoch == epoch_info.epoch {
+        println!("Epoch has not changed, skipping the update...");
+        return;
+    }
 
-            if let Ok(response) = slack_notification::send::send_message(&channel_id, &format!("Epoch changed, executing update for Dynosol for epoch {}",  epoch_info.epoch)).await {
-                println!("Slack api response: {:#?}", response); //sample message
+    println!("Epoch changed, executing the update...");
+
+    if let Ok(response) = slack_notification::send::send_message(
+        &channel_id,
+        &format!(
+            "Epoch changed, executing update for Dynosol for epoch {}",
+            epoch_info.epoch
+        ),
+    )
+    .await
+    {
+        println!("Slack api response: {:#?}", response); //sample message
+    } else {
+        eprintln!("Failed to send slack message about triggering rewards");
+    }
+
+    match command_update(&config, &stake_pool_pubkey, true, false, false).await {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("Failed to update DynoSol. Failed with error: {:#?}", err);
+            if let Ok(response) = slack_notification::send::send_message(
+                &channel_id,
+                "Failed to run command to update Dyno Sol",
+            )
+            .await
+            {
+                println!("Slack api response: {:#?}", response);
             } else {
-                eprintln!("Failed to send slack message about triggering rewards");
+                eprintln!("Failed to send slack message about command update");
             }
-
-            match command_update(&config, &stake_pool_pubkey, true, false, false).await {
-                Ok(_) => {},
-                Err(err) => {
-                    eprintln!("Failed to update DynoSol. Failed with error: {:#?}", err);
-                    if let Ok(response)  = slack_notification::send::send_message(&channel_id, "Failed to run command to update Dyno Sol").await {
-                        println!("Slack api response: {:#?}", response);
-                    } else {
-                        eprintln!("Failed to send slack message about command update");
-                    }
-                }
-            }
-
+        }
+    }
 }
 
 fn get_latest_blockhash(client: &RpcClient) -> Result<Hash, Error> {
@@ -230,7 +297,6 @@ fn check_fee_payer_balance(config: &Config, required_balance: u64) -> Result<(),
         Ok(())
     }
 }
-
 
 fn checked_transaction_with_signers_and_additional_fee<T: Signers>(
     config: &Config,
@@ -303,7 +369,6 @@ fn send_transaction_no_wait(
     }
     Ok(())
 }
-
 
 async fn command_update(
     config: &Config,
