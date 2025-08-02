@@ -191,7 +191,7 @@ async fn set_config_and_update() {
         fee_payer: fee_payer_box,
         dry_run: false,
         no_update: false,
-        compute_unit_limit: ComputeUnitLimit::Default,
+        compute_unit_limit: ComputeUnitLimit::Static(300_000),
         compute_unit_price: None,
     };
 
