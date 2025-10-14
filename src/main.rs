@@ -12,7 +12,8 @@ use {
         },
     },
     actix_cors::Cors,
-    actix_web::{App, HttpResponse, HttpServer, get},
+    actix_web::{App, HttpResponse, HttpServer, get, web},
+    anyhow::{Context, Result},
     config::StakePoolConfig,
     dotenv::dotenv,
     solana_commitment_config::CommitmentConfig,
@@ -23,12 +24,13 @@ use {
     solana_message::Message,
     solana_native_token::{self, Sol},
     solana_pubkey::Pubkey,
-    solana_rpc_client::rpc_client::RpcClient,
+    solana_rpc_client::nonblocking::rpc_client::RpcClient,
     solana_signer::{Signer, signers::Signers},
     solana_transaction::Transaction,
     spl_stake_pool::state::AccountType as SplAccountType,
-    std::str::FromStr,
-    tokio::time::interval,
+    std::{str::FromStr, sync::Arc},
+    tokio::time::{Duration, interval, sleep},
+    tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt},
     utils::compute_budget::ComputeBudgetInstruction,
 };
 
@@ -52,48 +54,61 @@ pub(crate) struct Config {
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_env("RUST_LOG"))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(true)
+                .with_thread_names(true)
+                .with_line_number(true),
+        )
+        .init();
 
-    let config = StakePoolConfig::get_config();
+    let config = Arc::new(
+        StakePoolConfig::get_config()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+    );
+    let worker_config = config.clone();
+    let port = config.port;
+    tracing::info!("Stake pool starting on port: {}", port);
 
-    // Start the background task that runs every 5 minutes
-    tokio::spawn(async {
-        let mut ticker = interval(tokio::time::Duration::from_secs(300)); // 5 minutes
+    tokio::spawn(async move {
+        let mut ticker = interval(tokio::time::Duration::from_secs(300));
         loop {
             ticker.tick().await;
-            set_config_and_update().await;
+            if let Err(err) = set_config_and_update((*worker_config).clone()).await {
+                tracing::error!("ConfigUpdate Worker:- Error: {:#?}", err);
+            }
         }
     });
 
-    println!("Stake pool starting on port: {}", config.port);
-
-    HttpServer::new(|| {
+    HttpServer::new(move || {
         App::new()
             .wrap(
                 Cors::default()
                     .allow_any_origin()
                     .allowed_methods(vec!["GET"]),
             )
+            .app_data(web::Data::new(config.clone()))
             .service(get_validators)
     })
-    .bind(("0.0.0.0", config.port))?
+    .bind(("0.0.0.0", port))?
     .run()
     .await
 }
 
-type CommandResult = Result<(), Error>;
-
 #[get("/validators")]
-async fn get_validators() -> HttpResponse {
-    let result = tokio::task::spawn_blocking(move || {
-        let rpc_url = StakePoolConfig::get_config().rpc_url;
-        let stake_pool_address = StakePoolConfig::get_config().stake_pool_address;
-
-        let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
-        let stake_pool_pubkey = Pubkey::from_str(&stake_pool_address).unwrap();
+async fn get_validators(config: web::Data<StakePoolConfig>) -> HttpResponse {
+    let result = tokio::task::spawn(async move {
+        let rpc_client =
+            RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
+        let stake_pool_pubkey = Pubkey::from_str(&config.stake_pool_address).unwrap();
 
         let stake_pool = get_stake_pool(&rpc_client, &stake_pool_pubkey)
+            .await
             .map_err(|_| "Failed to fetch stake pool")?;
         let validator_list = get_validator_list(&rpc_client, &stake_pool.validator_list)
+            .await
             .map_err(|_| "Failed to fetch validator list")?;
 
         let serialized_validator_list = ValidatorList {
@@ -144,50 +159,26 @@ async fn get_validators() -> HttpResponse {
     }
 }
 
-async fn get_epoch_info_with_backoff(
-    client: &RpcClient,
-    retries: u8,
-) -> Result<EpochInfo, Box<dyn std::error::Error + Send + Sync>> {
-    let delay = 500; //500ms
-    let mut attempts = 0;
+async fn get_epoch_info(client: &RpcClient) -> Result<EpochInfo> {
+    let epoch_info = client
+        .get_epoch_info()
+        .await
+        .context("Failed to fetch epoch info from blockchain\n")?;
 
-    while attempts < retries {
-        match client.get_epoch_info() {
-            Ok(info) => return Ok(info),
-            Err(err) => {
-                eprintln!(
-                    "Attempt {} failed to get current epoch. Failed with reason: {:?}",
-                    attempts + 1,
-                    err
-                );
-                let jitter = rand::random_range(0..100); //upto 100ms
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay + jitter)).await;
-                attempts += 1;
-            }
-        }
-    }
-
-    Err("Exceeded max retries for get_epoch_info".into())
+    Ok(epoch_info)
 }
 
-async fn set_config_and_update() {
-    let stake_pool_address = StakePoolConfig::get_config().stake_pool_address;
-    let fee_payer_pvt_key = StakePoolConfig::get_config().fee_payer_private_key;
-    let fee_payer = Keypair::from_base58_string(&fee_payer_pvt_key);
-
-    let stake_pool_pubkey = Pubkey::from_str(&stake_pool_address).unwrap();
-
-    let channel_id = StakePoolConfig::get_config().slack_channel_id;
-
-    let rpc_url = StakePoolConfig::get_config().rpc_url;
-    let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+async fn set_config_and_update(config: StakePoolConfig) -> Result<()> {
+    let fee_payer = Keypair::from_base58_string(&config.fee_payer_private_key);
+    let stake_pool_pubkey = Pubkey::from_str(&config.stake_pool_address)?;
+    let channel_id = config.slack_channel_id;
+    let rpc_client = RpcClient::new_with_commitment(config.rpc_url, CommitmentConfig::confirmed());
 
     let fee_payer_box: Box<dyn Signer + Send + Sync + 'static> = Box::new(fee_payer);
 
     let config = Config {
         rpc_client: rpc_client,
-        stake_pool_program_id: Pubkey::from_str("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy")
-            .unwrap(),
+        stake_pool_program_id: Pubkey::from_str("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy")?,
         fee_payer: fee_payer_box,
         dry_run: false,
         no_update: false,
@@ -195,49 +186,31 @@ async fn set_config_and_update() {
         compute_unit_price: None,
     };
 
-    println!("thread is awake, checking if epoch changed...");
+    tracing::info!("Thread is awake, checking if epoch changed...");
 
-    let stake_pool = match get_stake_pool(&config.rpc_client, &stake_pool_pubkey) {
-        Ok(r) => r,
-        Err(e) => {
-            println!("Error: fail to get stake pool");
-            return;
-        }
-    };
-
-    let epoch_info = match get_epoch_info_with_backoff(&config.rpc_client, 5).await {
-        Ok(info) => {
-            println!("Epoch info is: {:?}", info);
-            info
-        }
+    let stake_pool = get_stake_pool(&config.rpc_client, &stake_pool_pubkey).await?;
+    let epoch_info = match get_epoch_info(&config.rpc_client).await {
+        Ok(info) => info,
         Err(err) => {
-            println!("Failed with error: {:#?}", err);
-            match slack_notification::send::send_message(
+            tracing::error!("Failed with error: {:#?}", err);
+            slack_notification::send::send_message(
                 &channel_id,
                 "Rpc is failing to get the latest epoch info. Retrying again in 5 minutes",
             )
             .await
-            {
-                Ok(_) => {}
-                Err(err) => {
-                    eprintln!(
-                        "Failed to send message on slack about rpc failure. Failed with reason: {:#?}",
-                        err
-                    );
-                }
-            };
-            return;
+            .context("Failed to send message on slack about rpc failure")?;
+            return Ok(());
         }
     };
 
     if stake_pool.last_update_epoch == epoch_info.epoch {
-        println!("Epoch has not changed, skipping the update...");
-        return;
+        tracing::info!("Epoch has not changed, skipping the update...");
+        return Ok(());
     }
 
-    println!("Epoch changed, executing the update...");
+    tracing::info!("Epoch changed, executing the update...");
 
-    if let Ok(response) = slack_notification::send::send_message(
+    slack_notification::send::send_message(
         &channel_id,
         &format!(
             "Epoch changed, executing update for Dynosol for epoch {}",
@@ -245,48 +218,49 @@ async fn set_config_and_update() {
         ),
     )
     .await
-    {
-        println!("Slack api response: {:#?}", response); //sample message
-    } else {
-        eprintln!("Failed to send slack message about triggering rewards");
-    }
+    .context("Failed to send slack message about triggering rewards")?;
 
-    match command_update(&config, &stake_pool_pubkey, true, false, false).await {
-        Ok(_) => {}
-        Err(err) => {
-            eprintln!("Failed to update DynoSol. Failed with error: {:#?}", err);
-            if let Ok(response) = slack_notification::send::send_message(
-                &channel_id,
-                "Failed to run command to update Dyno Sol",
-            )
-            .await
-            {
-                println!("Slack api response: {:#?}", response);
-            } else {
-                eprintln!("Failed to send slack message about command update");
-            }
+    if let Err(err) = command_update(&config, &stake_pool_pubkey, true, false, false).await {
+        tracing::error!("Failed to update DynoSol. Failed with error: {:#?}", err);
+        if let Err(err) = slack_notification::send::send_message(
+            &channel_id,
+            "Failed to run command to update Dyno Sol",
+        )
+        .await
+        {
+            tracing::error!(
+                "Failed to send slack message about command update.\nError {}:-",
+                err
+            );
         }
     }
+    Ok(())
 }
 
-fn get_latest_blockhash(client: &RpcClient) -> Result<Hash, Error> {
+async fn get_latest_blockhash(client: &RpcClient) -> Result<Hash> {
     Ok(client
-        .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())?
+        .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+        .await?
         .0)
 }
 
-fn checked_transaction_with_signers<T: Signers>(
+async fn checked_transaction_with_signers<T: Signers>(
     config: &Config,
     instructions: &[Instruction],
     signers: &T,
-) -> Result<Transaction, Error> {
-    checked_transaction_with_signers_and_additional_fee(config, instructions, signers, 0)
+) -> Result<Transaction> {
+    let tx = checked_transaction_with_signers_and_additional_fee(config, instructions, signers, 0)
+        .await?;
+    Ok(tx)
 }
 
-fn check_fee_payer_balance(config: &Config, required_balance: u64) -> Result<(), Error> {
-    let balance = config.rpc_client.get_balance(&config.fee_payer.pubkey())?;
+async fn check_fee_payer_balance(config: &Config, required_balance: u64) -> Result<()> {
+    let balance = config
+        .rpc_client
+        .get_balance(&config.fee_payer.pubkey())
+        .await?;
     if balance < required_balance {
-        Err(format!(
+        Err(anyhow::anyhow!(
             "Fee payer, {}, has insufficient balance: {} required, {} available",
             config.fee_payer.pubkey(),
             Sol(required_balance),
@@ -298,14 +272,17 @@ fn check_fee_payer_balance(config: &Config, required_balance: u64) -> Result<(),
     }
 }
 
-fn checked_transaction_with_signers_and_additional_fee<T: Signers>(
+async fn checked_transaction_with_signers_and_additional_fee<T: Signers>(
     config: &Config,
     instructions: &[Instruction],
     signers: &T,
     additional_fee: u64,
-) -> Result<Transaction, Error> {
-    let recent_blockhash = get_latest_blockhash(&config.rpc_client)?;
+) -> Result<Transaction> {
+    let recent_blockhash = get_latest_blockhash(&config.rpc_client)
+        .await
+        .context("Failed to get latest blockhash")?;
     let mut instructions = instructions.to_vec();
+
     if let Some(compute_unit_price) = config.compute_unit_price {
         instructions.push(ComputeBudgetInstruction::set_compute_unit_price(
             compute_unit_price,
@@ -324,48 +301,70 @@ fn checked_transaction_with_signers_and_additional_fee<T: Signers>(
                 &mut instructions,
                 &config.fee_payer.pubkey(),
                 &recent_blockhash,
-            )?;
+            )
+            .await?
         }
     }
+
     let message = Message::new_with_blockhash(
         &instructions,
         Some(&config.fee_payer.pubkey()),
         &recent_blockhash,
     );
-    check_fee_payer_balance(
-        config,
-        additional_fee.saturating_add(config.rpc_client.get_fee_for_message(&message)?),
-    )?;
+
+    let required_fee = config
+        .rpc_client
+        .get_fee_for_message(&message)
+        .await
+        .context("Failed to fetch fee for transaction message")?;
+
+    check_fee_payer_balance(config, additional_fee.saturating_add(required_fee)).await?;
+
     let transaction = Transaction::new(signers, message, recent_blockhash);
+
     Ok(transaction)
 }
 
-fn send_transaction(
-    config: &Config,
-    transaction: Transaction,
-) -> solana_client::client_error::Result<()> {
+async fn send_transaction(config: &Config, transaction: Transaction) -> Result<()> {
     if config.dry_run {
-        let result = config.rpc_client.simulate_transaction(&transaction)?;
-        println!("Simulate result: {:?}", result);
+        let result = config
+            .rpc_client
+            .simulate_transaction(&transaction)
+            .await
+            .map_err(|err| {
+                tracing::error!("Simulation failed: {:?}", err);
+                err
+            })?;
+        tracing::info!("Simulate result: {:?}", result);
     } else {
         let signature = config
             .rpc_client
-            .send_and_confirm_transaction_with_spinner(&transaction)?;
-        println!("Signature: {}", signature);
+            .send_and_confirm_transaction_with_spinner(&transaction)
+            .await
+            .with_context(|| "Failed to send and confirm transaction with spinner")?;
+        tracing::info!("Signature: {}", signature);
     }
     Ok(())
 }
 
-fn send_transaction_no_wait(
-    config: &Config,
-    transaction: Transaction,
-) -> solana_client::client_error::Result<()> {
+async fn send_transaction_no_wait(config: &Config, transaction: Transaction) -> Result<()> {
     if config.dry_run {
-        let result = config.rpc_client.simulate_transaction(&transaction)?;
-        println!("Simulate result: {:?}", result);
+        let result = config
+            .rpc_client
+            .simulate_transaction(&transaction)
+            .await
+            .map_err(|err| {
+                tracing::error!("Simulation failed: {:?}", err);
+                err
+            })?;
+        tracing::info!("Simulate result: {:?}", result);
     } else {
-        let signature = config.rpc_client.send_transaction(&transaction)?;
-        println!("Signature: {}", signature);
+        let signature = config
+            .rpc_client
+            .send_transaction(&transaction)
+            .await
+            .with_context(|| "Failed to send transaction (no wait)")?;
+        tracing::info!("Signature: {}", signature);
     }
     Ok(())
 }
@@ -376,24 +375,24 @@ async fn command_update(
     force: bool,
     no_merge: bool,
     stale_only: bool,
-) -> CommandResult {
+) -> Result<()> {
     if config.no_update {
-        println!("Update requested, but --no-update flag specified, so doing nothing");
+        tracing::info!("Update requested, but --no-update flag specified, so doing nothing");
         return Ok(());
     }
-    let stake_pool = get_stake_pool(&config.rpc_client, stake_pool_address)?;
-    let epoch_info = config.rpc_client.get_epoch_info()?;
+    let stake_pool = get_stake_pool(&config.rpc_client, stake_pool_address).await?;
+    let epoch_info = get_epoch_info(&config.rpc_client).await?;
 
     if stake_pool.last_update_epoch == epoch_info.epoch {
         if force {
-            println!("Update not required, but --force flag specified, so doing it anyway");
+            tracing::info!("Update not required, but --force flag specified, so doing it anyway");
         } else {
-            println!("Update not required");
+            tracing::info!("Update not required");
             return Ok(());
         }
     }
 
-    let validator_list = get_validator_list(&config.rpc_client, &stake_pool.validator_list)?;
+    let validator_list = get_validator_list(&config.rpc_client, &stake_pool.validator_list).await?;
 
     let (mut update_list_instructions, final_instructions) = if stale_only {
         spl_stake_pool::instruction::update_stale_stake_pool(
@@ -423,8 +422,11 @@ async fn command_update(
                 config,
                 &[instruction],
                 &[config.fee_payer.as_ref()],
-            )?;
-            send_transaction_no_wait(config, transaction)?;
+            )
+            .await?;
+            send_transaction_no_wait(config, transaction).await?;
+            // to prevent rpc timeout
+            sleep(Duration::from_secs_f32(0.5)).await;
         }
 
         // wait on the last one
@@ -432,15 +434,20 @@ async fn command_update(
             config,
             &last_instruction,
             &[config.fee_payer.as_ref()],
-        )?;
-        send_transaction(config, transaction)?;
+        )
+        .await?;
+        send_transaction(config, transaction).await?;
     }
     let transaction = checked_transaction_with_signers(
         config,
         &final_instructions,
         &[config.fee_payer.as_ref()],
+    )
+    .await
+    .with_context(
+        || "Failed to create checked transaction with signers for final stake pool instructions",
     )?;
-    send_transaction(config, transaction)?;
+    send_transaction(config, transaction).await?;
 
     Ok(())
 }
