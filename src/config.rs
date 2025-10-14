@@ -1,51 +1,45 @@
 use std::env;
 
-use thiserror::Error;
+use anyhow::{Context, Result};
 
 #[allow(dead_code)]
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct StakePoolConfig {
     pub port: u16,
     pub rpc_url: String,
     pub fee_payer_private_key: String,
     pub stake_pool_address: String,
     pub slack_token: String,
-    pub slack_channel_id: String
-}
-
-#[derive(Error, Debug)]
-enum ConfigError {
-    #[error("Error: Invalid RPC Url")]
-    InavlidRpcURL,
-    #[error("Error: Invalid Fee Payer")]
-    InvalidFeePayerPrivateKey,
-    #[error("Error: Invalid Stake Pool Address")]
-    InvalidStakePoolAddress,
-    #[error("Error: Invalid Slack Token")]
-    InvalidSlackToken,
-    #[error("Error: Invalid Slack Channel ID")]
-    InvalidSlackChannelID
+    pub slack_channel_id: String,
 }
 
 impl StakePoolConfig {
-    pub fn get_config() -> Self {
+    pub fn get_config() -> Result<Self> {
         let port = match env::var("PORT") {
-            Ok(port) => port.parse::<u16>().unwrap(),
-            Err(_) => {
-                8000
-            }
+            Ok(port) => port.parse::<u16>()?,
+            Err(_) => 8000,
         };
 
-        let rpc_url = env::var("RPC_URL").unwrap_or_else(|_| ConfigError::InavlidRpcURL.to_string());
+        let rpc_url = env::var("RPC_URL").context("RPC_URL is not set")?;
 
-        let fee_payer_private_key = env::var("FEE_PAYER_PRIVATE_KEY").unwrap_or_else(|_| ConfigError::InvalidFeePayerPrivateKey.to_string());
+        let fee_payer_private_key =
+            env::var("FEE_PAYER_PRIVATE_KEY").context("FEE_PAYER_PRIVATE_KEY is not set")?;
 
-        let stake_pool_address = env::var("STAKE_POOL_ADDRESS").unwrap_or_else(|_| ConfigError::InvalidStakePoolAddress.to_string());
+        let stake_pool_address =
+            env::var("STAKE_POOL_ADDRESS").context("STAKE_POOL_ADDRESS is not set")?;
 
-        let slack_token = env::var("SLACK_TOKEN").unwrap_or_else(|_| ConfigError::InvalidSlackToken.to_string());
+        let slack_token = env::var("SLACK_TOKEN").context("SLACK_TOKEN is not set")?;
 
-        let slack_channel_id = env::var("SLACK_CHANNEL_ID").unwrap_or_else(|_| ConfigError::InvalidSlackChannelID.to_string());
+        let slack_channel_id =
+            env::var("SLACK_CHANNEL_ID").context("SLACK_CHANNEL_ID is not set")?;
 
-        Self { port, rpc_url, fee_payer_private_key, stake_pool_address, slack_token, slack_channel_id }
+        Ok(Self {
+            port,
+            rpc_url,
+            fee_payer_private_key,
+            stake_pool_address,
+            slack_token,
+            slack_channel_id,
+        })
     }
 }
