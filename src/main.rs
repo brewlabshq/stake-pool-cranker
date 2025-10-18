@@ -73,7 +73,7 @@ async fn main() -> std::io::Result<()> {
     tracing::info!("Stake pool starting on port: {}", port);
 
     tokio::spawn(async move {
-        let mut ticker = interval(tokio::time::Duration::from_secs(300));
+        let mut ticker = interval(tokio::time::Duration::from_secs(30 * 60));
         loop {
             ticker.tick().await;
             if let Err(err) = set_config_and_update((*worker_config).clone()).await {
@@ -426,7 +426,7 @@ async fn command_update(
             .await?;
             send_transaction_no_wait(config, transaction).await?;
             // to prevent rpc timeout
-            sleep(Duration::from_secs_f32(0.5)).await;
+            sleep(Duration::from_secs(10)).await;
         }
 
         // wait on the last one
