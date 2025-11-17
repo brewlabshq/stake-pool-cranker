@@ -100,9 +100,13 @@ async fn main() -> std::io::Result<()> {
 #[get("/validators")]
 async fn get_validators(config: web::Data<StakePoolConfig>) -> HttpResponse {
     let result = tokio::task::spawn(async move {
+        if config.stake_pool_address.is_empty() {
+            return Err("No stake pool addresses configured");
+        }
         let rpc_client =
             RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
-        let stake_pool_pubkey = Pubkey::from_str(&config.stake_pool_address).unwrap();
+        let stake_pool_pubkey = Pubkey::from_str(&config.stake_pool_address[0])
+            .map_err(|_| "Invalid stake pool address")?;
 
         let stake_pool = get_stake_pool(&rpc_client, &stake_pool_pubkey)
             .await
@@ -170,8 +174,8 @@ async fn get_epoch_info(client: &RpcClient) -> Result<EpochInfo> {
 
 async fn set_config_and_update(config: StakePoolConfig) -> Result<()> {
     let fee_payer = Keypair::from_base58_string(&config.fee_payer_private_key);
-    let stake_pool_pubkey = Pubkey::from_str(&config.stake_pool_address)?;
     let channel_id = config.slack_channel_id;
+    let stake_pool_addresses = config.stake_pool_address.clone();
     let rpc_client = RpcClient::new_with_commitment(config.rpc_url, CommitmentConfig::confirmed());
 
     let fee_payer_box: Box<dyn Signer + Send + Sync + 'static> = Box::new(fee_payer);
@@ -182,56 +186,73 @@ async fn set_config_and_update(config: StakePoolConfig) -> Result<()> {
         fee_payer: fee_payer_box,
         dry_run: false,
         no_update: false,
-        compute_unit_limit: ComputeUnitLimit::Static(300_000),
+        compute_unit_limit: ComputeUnitLimit::Static(250_000),
         compute_unit_price: None,
     };
 
     tracing::info!("Thread is awake, checking if epoch changed...");
 
-    let stake_pool = get_stake_pool(&config.rpc_client, &stake_pool_pubkey).await?;
-    let epoch_info = match get_epoch_info(&config.rpc_client).await {
-        Ok(info) => info,
-        Err(err) => {
-            tracing::error!("Failed with error: {:#?}", err);
-            slack_notification::send::send_message(
-                &channel_id,
-                "Rpc is failing to get the latest epoch info. Retrying again in 5 minutes",
-            )
-            .await
-            .context("Failed to send message on slack about rpc failure")?;
-            return Ok(());
+    for stake_pool_address_str in &stake_pool_addresses {
+        let stake_pool_pubkey = Pubkey::from_str(stake_pool_address_str)?;
+
+        let stake_pool = get_stake_pool(&config.rpc_client, &stake_pool_pubkey).await?;
+        let epoch_info = match get_epoch_info(&config.rpc_client).await {
+            Ok(info) => info,
+            Err(err) => {
+                tracing::error!("Failed with error: {:#?}", err);
+                slack_notification::send::send_message(
+                    &channel_id,
+                    "Rpc is failing to get the latest epoch info. Retrying again in 5 minutes",
+                )
+                .await
+                .context("Failed to send message on slack about rpc failure")?;
+                return Ok(());
+            }
+        };
+
+        if stake_pool.last_update_epoch == epoch_info.epoch {
+            tracing::info!(
+                "Epoch has not changed for stake pool {}, skipping the update...",
+                stake_pool_address_str
+            );
+            continue;
         }
-    };
 
-    if stake_pool.last_update_epoch == epoch_info.epoch {
-        tracing::info!("Epoch has not changed, skipping the update...");
-        return Ok(());
-    }
+        tracing::info!(
+            "Epoch changed, executing the update for stake pool {}...",
+            stake_pool_address_str
+        );
 
-    tracing::info!("Epoch changed, executing the update...");
-
-    slack_notification::send::send_message(
-        &channel_id,
-        &format!(
-            "Epoch changed, executing update for Dynosol for epoch {}",
-            epoch_info.epoch
-        ),
-    )
-    .await
-    .context("Failed to send slack message about triggering rewards")?;
-
-    if let Err(err) = command_update(&config, &stake_pool_pubkey, true, false, false).await {
-        tracing::error!("Failed to update DynoSol. Failed with error: {:#?}", err);
-        if let Err(err) = slack_notification::send::send_message(
+        slack_notification::send::send_message(
             &channel_id,
-            "Failed to run command to update Dyno Sol",
+            &format!(
+                "Epoch changed, executing update for stake pool {} for epoch {}",
+                stake_pool_address_str, epoch_info.epoch
+            ),
         )
         .await
-        {
+        .context("Failed to send slack message about triggering rewards")?;
+
+        if let Err(err) = command_update(&config, &stake_pool_pubkey, true, false, false).await {
             tracing::error!(
-                "Failed to send slack message about command update.\nError {}:-",
+                "Failed to update stake pool {}. Failed with error: {:#?}",
+                stake_pool_address_str,
                 err
             );
+            if let Err(err) = slack_notification::send::send_message(
+                &channel_id,
+                &format!(
+                    "Failed to run command to update stake pool {}",
+                    stake_pool_address_str
+                ),
+            )
+            .await
+            {
+                tracing::error!(
+                    "Failed to send slack message about command update.\nError {}:-",
+                    err
+                );
+            }
         }
     }
     Ok(())
@@ -426,7 +447,7 @@ async fn command_update(
             .await?;
             send_transaction_no_wait(config, transaction).await?;
             // to prevent rpc timeout
-            sleep(Duration::from_secs(10)).await;
+            sleep(Duration::from_secs(30)).await;
         }
 
         // wait on the last one
